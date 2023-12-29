@@ -68,7 +68,7 @@ async fn main() {
         count.store(c + 1, Ordering::Relaxed);
 
         match ping(&room.address).await {
-            Ok(output) => room.ping = output_to_duration(output),
+            Ok(output) => room.ping = output_to_duration(room.address.as_bytes(), output),
             Err(err) => eprintln!("unable to ping: {err}"),
         }
     });
@@ -121,23 +121,32 @@ fn ping(address: &str) -> impl Future<Output = Result<std::process::Output, std:
         .output()
 }
 
-fn output_to_duration(output: std::process::Output) -> Option<Duration> {
+fn output_to_duration(ip: &[u8], output: std::process::Output) -> Option<Duration> {
     output
         .stdout
-        .windows(12)
-        .filter_map(|window| {
-            window.starts_with(b"time=").then(|| {
-                let end = window[5..]
-                    .iter()
-                    .position(|b| !b.is_ascii_digit())
-                    .unwrap_or(window.len());
+        .split(|&b| b == b'\n')
+        .filter(|line| line.windows(ip.len()).any(|window| window == ip))
+        .filter_map(|line| {
+            line.windows(16).find_map(|window| {
+                window.ends_with(b"ms").then(|| {
+                    let start = window
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(i, &b)| (b == b'=').then_some(i))
+                        .expect("ms line doesn't contain equals")
+                        + 1;
 
-                let ping = std::str::from_utf8(&window[5..5 + end])
-                    .unwrap()
-                    .parse::<u64>()
-                    .unwrap();
+                    let end = window[start..]
+                        .iter()
+                        .position(|n| !n.is_ascii_digit())
+                        .unwrap();
 
-                ping
+                    std::str::from_utf8(&window[start..start + end])
+                        .unwrap()
+                        .parse()
+                        .unwrap()
+                })
             })
         })
         .min()
